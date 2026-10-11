@@ -72,6 +72,27 @@ function InlineCard({ r, onClose }: { r: LookupResult; onClose: () => void }) { 
   );
 }
 
+/** Browser-side gtx fallback (uses the user's home IP; server IPs can be rate-limited). */
+async function translateInBrowser(text: string): Promise<string> {
+  const res = await fetch(
+    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q=${encodeURIComponent(text)}`
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const data = (await res.json()) as Array<Array<Array<string | null>>>;
+  const done = (data?.[0] ?? []).map((s) => s?.[0] ?? "").join("");
+  if (!done) throw new Error("empty translation");
+  return done;
+}
+
+async function translateParagraphsInBrowser(paras: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const p of paras) {
+    // gtx handles article-length text in one call for our ~250-word paragraphs
+    out.push(await translateInBrowser(p));
+  }
+  return out;
+}
+
 export default function ArticleView() {
   const { id } = useParams();
   const articleId = Number(id);
@@ -94,15 +115,41 @@ export default function ArticleView() {
     setTransError(null);
     try {
       const r = await api.translation(articleId);
-      setTransError(null);
+      // some paragraphs may be null if the server hit rate limits; fill via browser
+      if (r.translations.some((t) => !t)) {
+        const filled = [...r.translations];
+        for (let i = 0; i < filled.length; i++) {
+          if (!filled[i] && currentArticle?.body?.[i]) {
+            try {
+              filled[i] = await translateInBrowser(currentArticle.body[i]);
+            } catch {
+              /* keep null */
+            }
+          }
+        }
+        if (filled.every((t) => t)) {
+          api.saveTranslation(articleId, filled).catch(() => {});
+          return filled;
+        }
+      }
       return r.translations;
     } catch {
-      await new Promise((r) => setTimeout(r, 2000));
-      const r = await api.translation(articleId);
-      setTransError(null);
-      return r.translations;
+      // server-side providers rate-limited (Render IP): translate in the browser instead
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const r = await api.translation(articleId);
+        return r.translations;
+      } catch {
+        if (currentArticle?.body?.length) {
+          const trans = await translateParagraphsInBrowser(currentArticle.body);
+          api.saveTranslation(articleId, trans).catch(() => {});
+          setTransError(null);
+          return trans;
+        }
+        throw new Error("翻訳に失敗しました。もう一度お試しください。");
+      }
     }
-  }, [articleId]);
+  }, [articleId, currentArticle?.body]);
 
   useEffect(() => {
     if (articleId) {

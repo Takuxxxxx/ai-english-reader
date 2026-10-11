@@ -33,6 +33,12 @@ export const api = {
     }).then(handle<{ ok: boolean }>),
   translation: (id: number) =>
     fetch(`/api/articles/${id}/translation`).then(handle<{ translations: string[]; cached: boolean }>),
+  saveTranslation: (id: number, translations: string[]) =>
+    fetch(`/api/articles/${id}/translation`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ translations }),
+    }).then(handle<{ ok: boolean }>),
   getSettings: () =>
     fetch("/api/settings").then(
       handle<{ settings: Record<string, string>; llm: { provider: string; configured: boolean; missing: string[] } }>

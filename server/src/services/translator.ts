@@ -17,7 +17,7 @@ async function fetchJson(url: string, ms: number): Promise<unknown> {
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Retry a fetch a few times with backoff (free APIs rate-limit shared IPs). */
-async function fetchJsonRetry(url: string, ms: number, attempts = 3): Promise<unknown> {
+async function fetchJsonRetry(url: string, ms: number, attempts = 2): Promise<unknown> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
@@ -71,44 +71,10 @@ async function mymemoryTranslate(text: string): Promise<string> {
   return done;
 }
 
-async function lingvaTranslate(text: string): Promise<string> {
-  const data = (await fetchJsonRetry(
-    `https://lingva.ml/api/v1/en/ja/${encodeURIComponent(text)}`,
-    12000
-  )) as { translation?: string };
-  const done = data?.translation ?? "";
-  if (!done) throw new Error("empty lingva translation");
-  return done;
-}
-
-async function libreTranslate(text: string, base: string): Promise<string> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 12000);
-  try {
-    const res = await fetch(`${base}/translate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ q: text, source: "en", target: "ja", format: "text" }),
-      signal: ctrl.signal,
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = (await res.json()) as { translatedText?: string };
-    const done = data?.translatedText ?? "";
-    if (!done) throw new Error("empty libretranslate response");
-    return done;
-  } finally {
-    clearTimeout(t);
-  }
-}
-
-const LIBRE_BASES = ["https://translate.astian.org", "https://lt.vern.cc", "https://libretranslate.kouz.net"];
-
 type Provider = (text: string) => Promise<string>;
 const WEB_PROVIDERS: Array<{ name: string; run: Provider }> = [
   { name: "google", run: (t) => googleTranslate(t) },
   { name: "mymemory", run: (t) => mymemoryTranslate(t) },
-  { name: "lingva", run: (t) => lingvaTranslate(t) },
-  ...LIBRE_BASES.map((b) => ({ name: `libre(${b})`, run: (t: string) => libreTranslate(t, b) })),
 ];
 
 /** Free, keyless web translation with provider chain fallbacks. */

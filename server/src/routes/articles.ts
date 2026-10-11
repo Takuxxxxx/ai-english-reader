@@ -103,6 +103,34 @@ articles.get("/:id/translation", async (c) => {
   }
 });
 
+/** Save client-obtained translations (browser fallback fills the shared cache). */
+articles.put("/:id/translation", async (c) => {
+  const id = Number(c.req.param("id"));
+  const body = await c.req.json().catch(() => ({}));
+  const translations = body.translations;
+  if (!Array.isArray(translations) || translations.some((t) => typeof t !== "string" || !t.trim())) {
+    return c.json({ error: "translations must be a non-empty string array" }, 400);
+  }
+  try {
+    const db = await getDb();
+    const res = await db.execute({ sql: "SELECT body FROM articles WHERE id = ?", args: [id] });
+    const row = res.rows[0] as unknown as { body: string } | undefined;
+    if (!row) return c.json({ error: "Not found" }, 404);
+    const paras = JSON.parse(row.body) as string[];
+    if (translations.length !== paras.length) {
+      return c.json({ error: "translations length mismatch" }, 400);
+    }
+    await db.execute({
+      sql: "UPDATE articles SET translation = ? WHERE id = ?",
+      args: [JSON.stringify(translations), id],
+    });
+    return c.json({ ok: true });
+  } catch (err) {
+    handleError(`PUT /api/articles/${id}/translation`, err);
+    return c.json({ error: "Save failed" }, 500);
+  }
+});
+
 articles.post("/generate", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const topic = String(body.topic ?? "").trim();
