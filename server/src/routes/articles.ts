@@ -58,16 +58,45 @@ articles.get("/:id/translation", async (c) => {
     const res = await db.execute({ sql: "SELECT body, translation FROM articles WHERE id = ?", args: [id] });
     const row = res.rows[0] as unknown as { body: string; translation: string | null } | undefined;
     if (!row) return c.json({ error: "Not found" }, 404);
-    if (row.translation) {
-      return c.json({ translations: JSON.parse(row.translation), cached: true });
-    }
     const paras = JSON.parse(row.body) as string[];
-    const translations = await translateParagraphs(paras);
+    if (row.translation) {
+      const cached = JSON.parse(row.translation) as Array<string | null>;
+      const missing = cached.some((t) => !t);
+      if (!missing) return c.json({ translations: cached, cached: true });
+      // Partial cache: translate only the missing paragraphs.
+      const todo: Array<{ i: number; p: string }> = [];
+      paras.forEach((p, i) => {
+        if (!cached[i]) todo.push({ i, p });
+      });
+      const filled = [...cached];
+      for (const { i, p } of todo) {
+        try {
+          filled[i] = await translateParagraphs([p]).then((r) => r[0]);
+        } catch (err) {
+          handleError(`translate para ${i} of article ${id}`, err);
+        }
+      }
+      await db.execute({
+        sql: "UPDATE articles SET translation = ? WHERE id = ?",
+        args: [JSON.stringify(filled), id],
+      });
+      return c.json({ translations: filled, cached: false });
+    }
+    const results: Array<string | null> = [];
+    for (const p of paras) {
+      try {
+        const [t] = await translateParagraphs([p]);
+        results.push(t ?? null);
+      } catch (err) {
+        handleError(`translate para of article ${id}`, err);
+        results.push(null);
+      }
+    }
     await db.execute({
       sql: "UPDATE articles SET translation = ? WHERE id = ?",
-      args: [JSON.stringify(translations), id],
+      args: [JSON.stringify(results), id],
     });
-    return c.json({ translations, cached: false });
+    return c.json({ translations: results, cached: false });
   } catch (err) {
     handleError(`GET /api/articles/${id}/translation`, err);
     return c.json({ error: err instanceof Error ? err.message : "Translation failed" }, 500);

@@ -57,41 +57,77 @@ async function googleTranslate(text: string): Promise<string> {
 }
 
 async function mymemoryTranslate(text: string): Promise<string> {
-  const tr = (await fetchJsonRetry(
-    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`,
-    12000
-  )) as { responseData?: { translatedText?: string } };
-  const done = tr.responseData?.translatedText ?? "";
+  // MyMemory caps queries near 500 chars; keep chunks small.
+  const parts: string[] = [];
+  for (const s of splitChunks(text, 450)) {
+    const tr = (await fetchJsonRetry(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(s)}&langpair=en|ja`,
+      12000
+    )) as { responseData?: { translatedText?: string } };
+    parts.push(tr.responseData?.translatedText ?? "");
+  }
+  const done = parts.join("");
   if (!done) throw new Error("empty mymemory translation");
   return done;
 }
 
-/** Free, keyless web translation: Google gtx endpoint, MyMemory as fallback. */
+async function lingvaTranslate(text: string): Promise<string> {
+  const data = (await fetchJsonRetry(
+    `https://lingva.ml/api/v1/en/ja/${encodeURIComponent(text)}`,
+    12000
+  )) as { translation?: string };
+  const done = data?.translation ?? "";
+  if (!done) throw new Error("empty lingva translation");
+  return done;
+}
+
+async function libreTranslate(text: string, base: string): Promise<string> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(`${base}/translate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ q: text, source: "en", target: "ja", format: "text" }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = (await res.json()) as { translatedText?: string };
+    const done = data?.translatedText ?? "";
+    if (!done) throw new Error("empty libretranslate response");
+    return done;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+const LIBRE_BASES = ["https://translate.astian.org", "https://lt.vern.cc", "https://libretranslate.kouz.net"];
+
+type Provider = (text: string) => Promise<string>;
+const WEB_PROVIDERS: Array<{ name: string; run: Provider }> = [
+  { name: "google", run: (t) => googleTranslate(t) },
+  { name: "mymemory", run: (t) => mymemoryTranslate(t) },
+  { name: "lingva", run: (t) => lingvaTranslate(t) },
+  ...LIBRE_BASES.map((b) => ({ name: `libre(${b})`, run: (t: string) => libreTranslate(t, b) })),
+];
+
+/** Free, keyless web translation with provider chain fallbacks. */
 async function translateWeb(text: string): Promise<string> {
   const chunks = splitChunks(text, 800);
   const out: string[] = [];
   for (const ch of chunks) {
     let done = "";
-    try {
-      done = await googleTranslate(ch);
-    } catch (err) {
-      logger.warn("google translate failed, trying mymemory", { error: String(err) });
-    }
-    if (!done) {
+    let lastErr = "";
+    for (const p of WEB_PROVIDERS) {
       try {
-        done = await mymemoryTranslate(ch);
+        done = await p.run(ch);
+        if (done) break;
       } catch (err) {
-        logger.warn("mymemory translate failed", { error: String(err) });
+        lastErr = String(err);
+        logger.warn(`translate provider failed: ${p.name}`, { error: lastErr });
       }
     }
-    if (!done) {
-      try {
-        done = await googleTranslate(ch);
-      } catch (err) {
-        logger.warn("google translate retry failed", { error: String(err) });
-      }
-    }
-    if (!done) throw new Error("翻訳サービスが混み合っています。少し待ってからもう一度お試しください。");
+    if (!done) throw new Error(`翻訳サービスが混み合っています。少し待ってからもう一度お試しください。(${lastErr})`);
     out.push(done);
   }
   return out.join("");
