@@ -23,7 +23,7 @@ app.use("*", cors());
 app.get("/api/health", async (c) => {
   try {
     await getDb();
-    return c.json({ ok: true, ...providerStatus(), time: new Date().toISOString() });
+    return c.json({ ok: true, ...providerStatus(), commit: process.env.RENDER_GIT_COMMIT ?? "local", time: new Date().toISOString() });
   } catch (err) {
     handleError("health check", err);
     return c.json({ ok: false }, 500);
