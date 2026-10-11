@@ -3,6 +3,7 @@ import { generateJsonWithRetry, currentProvider } from "./llm.js";
 import { mockGenerate } from "./mock.js";
 import { loadPrompt } from "../prompts/loader.js";
 import { logger } from "../utils/logger.js";
+import { precacheArticleWords } from "./article-word-cache.js";
 
 export type Difficulty = "easier" | "just-right" | "challenging";
 
@@ -88,9 +89,17 @@ async function saveArticle(
   level: string
 ): Promise<Omit<GeneratedArticle, "wordCount"> & { title: string; body: string[]; topic: string }> {
   const db = await getDb();
-  await db.execute({
+  const inserted = await db.execute({
     sql: "INSERT INTO articles (topic_id, title, body, word_count, level, is_new) VALUES (?, ?, ?, ?, ?, 1)",
     args: [topicId, title, JSON.stringify(body), wordCount, level],
   });
+  const articleId = Number(inserted.lastInsertRowid);
+  try {
+    const cached = await precacheArticleWords(articleId, body);
+    logger.info(`Pre-cached ${cached} dictionary entries for article ${articleId}`);
+  } catch (err) {
+    // Saving the article must succeed even if building the optional word cache fails.
+    logger.warn(`Word-cache precomputation failed for article ${articleId}`, { error: String(err) });
+  }
   return { title, body, topic };
 }

@@ -81,6 +81,15 @@ async function migrate(db: Client) {
       example_en TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )`,
+    `CREATE TABLE IF NOT EXISTS article_word_cache (
+      article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+      word TEXT NOT NULL,
+      lemma TEXT,
+      meaning_ja TEXT NOT NULL,
+      pos TEXT,
+      example_en TEXT,
+      PRIMARY KEY (article_id, word)
+    )`,
     `CREATE TABLE IF NOT EXISTS vocabulary (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       word TEXT NOT NULL,

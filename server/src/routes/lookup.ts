@@ -15,7 +15,7 @@ interface CachedRow {
   example_en: string | null;
 }
 
-/** Tap a word -> explanation (DB cache first, then dict/LLM/web). Records history per article. */
+/** Tap a word -> precomputed article cache, tap history, then dict/LLM/web. */
 lookup.post("/", async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const raw = String(body.word ?? "").trim();
@@ -28,6 +28,53 @@ lookup.post("/", async (c) => {
 
   try {
     const db = await getDb();
+    if (articleId != null) {
+      const precomputed = await db.execute({
+        sql: "SELECT word, lemma, meaning_ja, pos, example_en FROM article_word_cache WHERE article_id = ? AND word = ?",
+        args: [articleId, word],
+      });
+      const item = precomputed.rows[0] as unknown as {
+        word: string;
+        lemma: string | null;
+        meaning_ja: string;
+        pos: string | null;
+        example_en: string | null;
+      } | undefined;
+      if (item) {
+        const cachedHistory = await db.execute({
+          sql: "SELECT * FROM word_lookups WHERE article_id = ? AND word = ? AND COALESCE(context_sentence,'') = COALESCE(?,'') ORDER BY id DESC LIMIT 1",
+          args: [articleId, word, sentence || null],
+        });
+        const previous = cachedHistory.rows[0] as unknown as CachedRow | undefined;
+        if (!previous) {
+          await db.execute({
+            sql: "INSERT INTO word_lookups (article_id, word, lemma, context_sentence, meaning_ja, pos, example_en) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            args: [articleId, word, item.lemma, sentence || null, item.meaning_ja, item.pos, item.example_en],
+          });
+        }
+        const exists = await db.execute({
+          sql: "SELECT id FROM vocabulary WHERE word = ? AND source_article_id = ?",
+          args: [word, articleId],
+        });
+        if (!exists.rows.length) {
+          await db.execute({
+            sql: "INSERT INTO vocabulary (word, pos, meaning_ja, example_en, source_article_id) VALUES (?, ?, ?, ?, ?)",
+            args: [word, item.pos, item.meaning_ja, item.example_en, articleId],
+          });
+        }
+        return c.json({
+          word: item.word,
+          lemma: item.lemma,
+          contextSentence: sentence || null,
+          meaningJa: item.meaning_ja,
+          pos: item.pos,
+          exampleEn: item.example_en,
+          source: "dict",
+          cached: true,
+          autoSaved: true,
+        });
+      }
+    }
     const cacheRes =
       articleId != null
         ? await db.execute({
