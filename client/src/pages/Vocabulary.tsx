@@ -27,8 +27,6 @@ export default function Vocabulary() {
   const [drag, setDrag] = useState<DragRect | null>(null);
   const [busy, setBusy] = useState(false);
   const [selectMode, setSelectMode] = useState(false);
-  // Temporary diagnostics: snapshot size at drag start.
-  const [snapSize, setSnapSize] = useState(-1);
   const itemRefs = useRef(new Map<number, HTMLLIElement>());
   const listRef = useRef<HTMLUListElement>(null);
   const dragStart = useRef<{ x: number; y: number } | null>(null);
@@ -104,7 +102,6 @@ export default function Vocabulary() {
     let raf = 0;
     dragStart.current = { x: sx, y: sy };
     gestureBase.current = new Set(selected);
-    setSnapSize(selected.size);
     const cleanup = () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("mousemove", onMove);
@@ -352,7 +349,6 @@ export default function Vocabulary() {
           <button onClick={() => setSelected(new Set())} className="ml-auto rounded-lg px-2 py-1.5 text-slate-500">
             選択解除
           </button>
-          <span className="text-[10px] text-slate-400">sel-v4 snap:{snapSize}</span>
         </div>
       )}
 

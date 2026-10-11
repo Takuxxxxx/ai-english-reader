@@ -68,6 +68,36 @@ export default function Settings() {
           </select>
         </label>
 
+        <label className="block">
+          <span className="text-sm font-medium">自動記事生成（毎日1本/トピック）</span>
+          <select
+            value={form.autoGenerate ?? "1"}
+            onChange={(e) => update("autoGenerate", e.target.value)}
+            className="mt-1 block w-full rounded-lg border p-2 dark:bg-slate-800"
+          >
+            <option value="1">オン</option>
+            <option value="0">オフ</option>
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="text-sm font-medium">自動生成の時刻（日本時間）</span>
+          <select
+            value={form.autoGenerateHour ?? "7"}
+            onChange={(e) => update("autoGenerateHour", e.target.value)}
+            className="mt-1 block w-full rounded-lg border p-2 dark:bg-slate-800"
+          >
+            {Array.from({ length: 24 }, (_, h) => (
+              <option key={h} value={String(h)}>
+                {String(h).padStart(2, "0")}:00
+              </option>
+            ))}
+          </select>
+          <span className="mt-1 block text-xs text-slate-500">
+            ※ 無料枠はスリープするため、起動後の最初のアクセス時に生成されることがあります
+          </span>
+        </label>
+
         <button
           onClick={async () => {
             await saveSettings(form);
