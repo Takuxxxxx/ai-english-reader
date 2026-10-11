@@ -14,6 +14,22 @@ async function fetchJson(url: string, ms: number): Promise<unknown> {
   }
 }
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Retry a fetch a few times with backoff (free APIs rate-limit shared IPs). */
+async function fetchJsonRetry(url: string, ms: number, attempts = 3): Promise<unknown> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetchJson(url, ms);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await sleep(1200 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
 function splitChunks(text: string, maxLen: number): string[] {
   const sentences = text.match(/[^.!?…]+[.!?…]+|[^.!?…]+$/g) ?? [text];
   const chunks: string[] = [];
@@ -30,6 +46,26 @@ function splitChunks(text: string, maxLen: number): string[] {
   return chunks;
 }
 
+async function googleTranslate(text: string): Promise<string> {
+  const data = (await fetchJsonRetry(
+    `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q=${encodeURIComponent(text)}`,
+    12000
+  )) as Array<Array<Array<string | null>>>;
+  const done = (data?.[0] ?? []).map((s) => s?.[0] ?? "").join("");
+  if (!done) throw new Error("empty google translation");
+  return done;
+}
+
+async function mymemoryTranslate(text: string): Promise<string> {
+  const tr = (await fetchJsonRetry(
+    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=en|ja`,
+    12000
+  )) as { responseData?: { translatedText?: string } };
+  const done = tr.responseData?.translatedText ?? "";
+  if (!done) throw new Error("empty mymemory translation");
+  return done;
+}
+
 /** Free, keyless web translation: Google gtx endpoint, MyMemory as fallback. */
 async function translateWeb(text: string): Promise<string> {
   const chunks = splitChunks(text, 800);
@@ -37,27 +73,26 @@ async function translateWeb(text: string): Promise<string> {
   for (const ch of chunks) {
     let done = "";
     try {
-      const data = (await fetchJson(
-        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q=${encodeURIComponent(ch)}`,
-        15000
-      )) as Array<Array<Array<string | null>>>;
-      done = (data?.[0] ?? []).map((s) => s?.[0] ?? "").join("");
+      done = await googleTranslate(ch);
     } catch (err) {
       logger.warn("google translate failed, trying mymemory", { error: String(err) });
     }
     if (!done) {
-      const small = splitChunks(ch, 450);
-      const parts: string[] = [];
-      for (const s of small) {
-        const tr = (await fetchJson(
-          `https://api.mymemory.translated.net/get?q=${encodeURIComponent(s)}&langpair=en|ja`,
-          15000
-        )) as { responseData?: { translatedText?: string } };
-        parts.push(tr.responseData?.translatedText ?? s);
+      try {
+        done = await mymemoryTranslate(ch);
+      } catch (err) {
+        logger.warn("mymemory translate failed", { error: String(err) });
       }
-      done = parts.join("");
     }
-    out.push(done || ch);
+    if (!done) {
+      try {
+        done = await googleTranslate(ch);
+      } catch (err) {
+        logger.warn("google translate retry failed", { error: String(err) });
+      }
+    }
+    if (!done) throw new Error("翻訳サービスが混み合っています。少し待ってからもう一度お試しください。");
+    out.push(done);
   }
   return out.join("");
 }
@@ -82,7 +117,16 @@ export async function translateParagraphs(paras: string[]): Promise<string[]> {
       logger.warn("LLM translation failed, falling back to web", { error: String(err) });
     }
   }
-  const out: string[] = [];
-  for (const p of paras) out.push(await translateWeb(p));
+  // Free APIs rate-limit shared IPs; keep concurrency low (2) and fail fast with a clear message.
+  const out = new Array<string>(paras.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(2, paras.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= paras.length) break;
+      out[i] = await translateWeb(paras[i]);
+    }
+  });
+  await Promise.all(workers);
   return out;
 }

@@ -86,8 +86,23 @@ export default function ArticleView() {
   const [expandedHist, setExpandedHist] = useState<number | null>(null);
   const [translations, setTranslations] = useState<string[] | null>(null);
   const [translating, setTranslating] = useState(false);
+  const [transError, setTransError] = useState<string | null>(null);
   const [shownTrans, setShownTrans] = useState<boolean[]>([]);
   const reqRef = useRef(0);
+
+  const fetchTranslations = useCallback(async (): Promise<string[]> => {
+    setTransError(null);
+    try {
+      const r = await api.translation(articleId);
+      setTransError(null);
+      return r.translations;
+    } catch {
+      await new Promise((r) => setTimeout(r, 2000));
+      const r = await api.translation(articleId);
+      setTransError(null);
+      return r.translations;
+    }
+  }, [articleId]);
 
   useEffect(() => {
     if (articleId) {
@@ -107,9 +122,11 @@ export default function ArticleView() {
       if (!translations && !translating) {
         setTranslating(true);
         try {
-          const r = await api.translation(articleId);
-          setTranslations(r.translations);
-          setShownTrans(r.translations.map((_, i) => i === pi));
+          const trans = await fetchTranslations();
+          setTranslations(trans);
+          setShownTrans(trans.map((_, i) => i === pi));
+        } catch (err) {
+          setTransError(err instanceof Error ? err.message : "翻訳に失敗しました。もう一度お試しください。");
         } finally {
           setTranslating(false);
         }
@@ -124,7 +141,7 @@ export default function ArticleView() {
         });
       }
     },
-    [articleId, translations, translating]
+    [fetchTranslations, translations, translating]
   );
 
   const toggleAllTrans = useCallback(async () => {
@@ -132,9 +149,10 @@ export default function ArticleView() {
     if (!trans && !translating) {
       setTranslating(true);
       try {
-        const r = await api.translation(articleId);
-        trans = r.translations;
+        trans = await fetchTranslations();
         setTranslations(trans);
+      } catch (err) {
+        setTransError(err instanceof Error ? err.message : "翻訳に失敗しました。もう一度お試しください。");
       } finally {
         setTranslating(false);
       }
@@ -143,7 +161,7 @@ export default function ArticleView() {
       const allShown = trans.every((_, i) => shownTrans[i]);
       setShownTrans(trans.map(() => !allShown));
     }
-  }, [articleId, translations, translating, shownTrans]);
+  }, [fetchTranslations, translations, translating, shownTrans]);
 
   const openWord = useCallback(
     async (word: string, sentence: string, key: string) => {
@@ -216,7 +234,8 @@ export default function ArticleView() {
       </p>
 
       <div className="mt-4">
-        <div className="mb-3 flex justify-end">
+        <div className="mb-3 flex items-center justify-end gap-2">
+          {transError && <span className="text-xs text-red-600">{transError}</span>}
           <button onClick={toggleAllTrans} disabled={translating} className="rounded-lg border px-3 py-1 text-xs disabled:opacity-50">
             {translating ? "翻訳中…" : translations && translations.every((_, i) => shownTrans[i]) ? "訳をすべて隠す" : "訳をすべて表示"}
           </button>
