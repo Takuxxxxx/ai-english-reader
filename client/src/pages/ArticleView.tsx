@@ -85,15 +85,6 @@ async function translateInBrowser(text: string): Promise<string> {
   return done;
 }
 
-async function translateParagraphsInBrowser(paras: string[]): Promise<string[]> {
-  const out: string[] = [];
-  for (const p of paras) {
-    // gtx handles article-length text in one call for our ~250-word paragraphs
-    out.push(await translateInBrowser(p));
-  }
-  return out;
-}
-
 export default function ArticleView() {
   const { id } = useParams();
   const articleId = Number(id);
@@ -106,51 +97,45 @@ export default function ArticleView() {
   const [history, setHistory] = useState<LookupHistoryItem[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [expandedHist, setExpandedHist] = useState<number | null>(null);
-  const [translations, setTranslations] = useState<string[] | null>(null);
+  const [translations, setTranslations] = useState<Array<string | null> | null>(null);
   const [translating, setTranslating] = useState(false);
   const [transError, setTransError] = useState<string | null>(null);
   const [shownTrans, setShownTrans] = useState<boolean[]>([]);
   const reqRef = useRef(0);
 
-  const fetchTranslations = useCallback(async (): Promise<string[]> => {
-    setTransError(null);
-    try {
-      const r = await api.translation(articleId);
-      // some paragraphs may be null if the server hit rate limits; fill via browser
-      if (r.translations.some((t) => !t)) {
-        const filled = [...r.translations];
-        for (let i = 0; i < filled.length; i++) {
-          if (!filled[i] && currentArticle?.body?.[i]) {
-            try {
-              filled[i] = await translateInBrowser(currentArticle.body[i]);
-            } catch {
-              /* keep null */
-            }
+  /** Fill any missing paragraphs using the browser (its IP is not rate-limited). */
+  const fillMissingInBrowser = useCallback(
+    async (translations: Array<string | null>): Promise<Array<string | null>> => {
+      const body = currentArticle?.body ?? [];
+      const filled = [...translations];
+      for (let i = 0; i < filled.length; i++) {
+        if (!filled[i] && body[i]) {
+          try {
+            filled[i] = await translateInBrowser(body[i]);
+          } catch {
+            /* keep null */
           }
         }
-        if (filled.every((t) => t)) {
-          api.saveTranslation(articleId, filled).catch(() => {});
-          return filled;
-        }
       }
-      return r.translations;
+      return filled;
+    },
+    [currentArticle?.body]
+  );
+
+  const fetchTranslations = useCallback(async (): Promise<Array<string | null>> => {
+    setTransError(null);
+    let base: Array<string | null> = [];
+    try {
+      base = (await api.translation(articleId)).translations;
     } catch {
-      // server-side providers rate-limited (Render IP): translate in the browser instead
-      await new Promise((r) => setTimeout(r, 1500));
-      try {
-        const r = await api.translation(articleId);
-        return r.translations;
-      } catch {
-        if (currentArticle?.body?.length) {
-          const trans = await translateParagraphsInBrowser(currentArticle.body);
-          api.saveTranslation(articleId, trans).catch(() => {});
-          setTransError(null);
-          return trans;
-        }
-        throw new Error("翻訳に失敗しました。もう一度お試しください。");
-      }
+      base = (currentArticle?.body ?? []).map(() => null);
     }
-  }, [articleId, currentArticle?.body]);
+    if (base.every((t) => t)) return base;
+    const filled = await fillMissingInBrowser(base);
+    if (filled.some((t) => t)) api.saveTranslation(articleId, filled).catch(() => {});
+    if (filled.some((t) => t)) return filled;
+    throw new Error("翻訳に失敗しました。もう一度お試しください。");
+  }, [articleId, currentArticle?.body, fillMissingInBrowser]);
 
   useEffect(() => {
     if (articleId) {
@@ -164,6 +149,37 @@ export default function ArticleView() {
       api.touchViewed(currentArticle.id).catch(() => {});
     }
   }, [currentArticle?.id, currentArticle?.isNew]);
+
+  // Warm the translation cache in the background so "訳を見る" is instant.
+  useEffect(() => {
+    const article = currentArticle;
+    if (!article?.body?.length) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await api.translation(article.id, true);
+        if (cancelled || r.translations.every((t) => t)) return;
+        const filled = [...r.translations];
+        for (let i = 0; i < filled.length; i++) {
+          if (!filled[i] && article.body[i]) {
+            try {
+              filled[i] = await translateInBrowser(article.body[i]);
+            } catch {
+              /* keep null */
+            }
+          }
+        }
+        if (!cancelled && filled.some((t) => t)) {
+          await api.saveTranslation(article.id, filled).catch(() => {});
+        }
+      } catch {
+        /* offline: nothing we can do here */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentArticle?.id]);
 
   const toggleTrans = useCallback(
     async (pi: number) => {

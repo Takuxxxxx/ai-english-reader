@@ -31,14 +31,16 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
     }).then(handle<{ ok: boolean }>),
-  translation: (id: number) =>
-    fetch(`/api/articles/${id}/translation`).then(handle<{ translations: string[]; cached: boolean }>),
-  saveTranslation: (id: number, translations: string[]) =>
+  translation: (id: number, cachedOnly = false) =>
+    fetch(`/api/articles/${id}/translation${cachedOnly ? "?cachedOnly=1" : ""}`).then(
+      handle<{ translations: Array<string | null>; cached: boolean }>
+    ),
+  saveTranslation: (id: number, translations: Array<string | null>) =>
     fetch(`/api/articles/${id}/translation`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ translations }),
-    }).then(handle<{ ok: boolean }>),
+    }).then(handle<{ ok: boolean; translations: Array<string | null> }>),
   getSettings: () =>
     fetch("/api/settings").then(
       handle<{ settings: Record<string, string>; llm: { provider: string; configured: boolean; missing: string[] } }>

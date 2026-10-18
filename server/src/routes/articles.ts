@@ -59,6 +59,11 @@ articles.get("/:id/translation", async (c) => {
     const row = res.rows[0] as unknown as { body: string; translation: string | null } | undefined;
     if (!row) return c.json({ error: "Not found" }, 404);
     const paras = JSON.parse(row.body) as string[];
+    if (c.req.query("cachedOnly") === "1") {
+      const cached = row.translation ? (JSON.parse(row.translation) as Array<string | null>) : [];
+      const translations = paras.map((_, i) => cached[i] ?? null);
+      return c.json({ translations, cached: translations.every(Boolean) });
+    }
     if (row.translation) {
       const cached = JSON.parse(row.translation) as Array<string | null>;
       const missing = cached.some((t) => !t);
@@ -103,28 +108,43 @@ articles.get("/:id/translation", async (c) => {
   }
 });
 
-/** Save client-obtained translations (browser fallback fills the shared cache). */
+/**
+ * Save translations obtained by the browser (its IP is not rate-limited like Render's).
+ * Accepts nulls so partial progress is kept, and merges with anything already cached.
+ */
 articles.put("/:id/translation", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json().catch(() => ({}));
-  const translations = body.translations;
-  if (!Array.isArray(translations) || translations.some((t) => typeof t !== "string" || !t.trim())) {
-    return c.json({ error: "translations must be a non-empty string array" }, 400);
+  const translations = body.translations as unknown;
+  const ok =
+    Array.isArray(translations) &&
+    translations.some((t) => typeof t === "string" && t.trim()) &&
+    translations.every((t) => t == null || typeof t === "string");
+  if (!ok) {
+    return c.json({ error: "translations must be an array of strings (nulls allowed)" }, 400);
   }
   try {
     const db = await getDb();
-    const res = await db.execute({ sql: "SELECT body FROM articles WHERE id = ?", args: [id] });
-    const row = res.rows[0] as unknown as { body: string } | undefined;
+    const res = await db.execute({ sql: "SELECT body, translation FROM articles WHERE id = ?", args: [id] });
+    const row = res.rows[0] as unknown as { body: string; translation: string | null } | undefined;
     if (!row) return c.json({ error: "Not found" }, 404);
     const paras = JSON.parse(row.body) as string[];
-    if (translations.length !== paras.length) {
+    const incoming = translations as Array<string | null>;
+    if (incoming.length !== paras.length) {
       return c.json({ error: "translations length mismatch" }, 400);
     }
+    const existing = row.translation ? (JSON.parse(row.translation) as Array<string | null>) : [];
+    const merged = paras.map((_, i) => {
+      const next = incoming[i];
+      if (typeof next === "string" && next.trim()) return next;
+      const prev = existing[i];
+      return typeof prev === "string" && prev.trim() ? prev : null;
+    });
     await db.execute({
       sql: "UPDATE articles SET translation = ? WHERE id = ?",
-      args: [JSON.stringify(translations), id],
+      args: [JSON.stringify(merged), id],
     });
-    return c.json({ ok: true });
+    return c.json({ ok: true, translations: merged });
   } catch (err) {
     handleError(`PUT /api/articles/${id}/translation`, err);
     return c.json({ error: "Save failed" }, 500);

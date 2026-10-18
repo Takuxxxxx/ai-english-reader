@@ -4,6 +4,7 @@ import { mockGenerate } from "./mock.js";
 import { loadPrompt } from "../prompts/loader.js";
 import { logger } from "../utils/logger.js";
 import { precacheArticleWords } from "./article-word-cache.js";
+import { translateParagraphs } from "./translator.js";
 
 export type Difficulty = "easier" | "just-right" | "challenging";
 
@@ -101,5 +102,25 @@ async function saveArticle(
     // Saving the article must succeed even if building the optional word cache fails.
     logger.warn(`Word-cache precomputation failed for article ${articleId}`, { error: String(err) });
   }
+  // Fire-and-forget: build the Japanese translation so readers never wait on it.
+  // Not awaited so generation returns promptly even when the free APIs are slow.
+  void pretranslateArticle(articleId, body);
   return { title, body, topic };
+}
+
+async function pretranslateArticle(articleId: number, body: string[]): Promise<void> {
+  try {
+    const translations = await translateParagraphs(body);
+    const done = translations.filter(Boolean).length;
+    if (done > 0) {
+      const db = await getDb();
+      await db.execute({
+        sql: "UPDATE articles SET translation = ? WHERE id = ?",
+        args: [JSON.stringify(translations), articleId],
+      });
+    }
+    logger.info(`Pre-translated ${done}/${body.length} paragraphs for article ${articleId}`);
+  } catch (err) {
+    logger.warn(`Pre-translation failed for article ${articleId}`, { error: String(err) });
+  }
 }
