@@ -129,6 +129,47 @@ lookup.post("/", async (c) => {
   }
 });
 
+/**
+ * Save a meaning the browser resolved itself (its IP is not rate-limited like Render's),
+ * so the shared article cache serves it instantly for everyone afterwards.
+ */
+lookup.put("/", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const articleId = body.articleId != null ? Number(body.articleId) : null;
+  const rawWord = String(body.word ?? "").trim().toLowerCase();
+  const meaningJa = String(body.meaningJa ?? "").trim();
+  if (articleId == null || !rawWord || !meaningJa) {
+    return c.json({ error: "articleId, word and meaningJa are required" }, 400);
+  }
+  const pos = body.pos != null ? String(body.pos) : null;
+  const lemma = body.lemma != null ? String(body.lemma) : null;
+  const exampleEn = body.exampleEn != null ? String(body.exampleEn) : null;
+  const sentence = body.sentence != null ? String(body.sentence).slice(0, 1000) : null;
+
+  try {
+    const db = await getDb();
+    await db.execute({
+      sql: `INSERT OR IGNORE INTO article_word_cache (article_id, word, lemma, meaning_ja, pos, example_en)
+            VALUES (?, ?, ?, ?, ?, ?)`,
+      args: [articleId, rawWord, lemma, meaningJa, pos, exampleEn],
+    });
+    const history = await db.execute({
+      sql: "SELECT id FROM word_lookups WHERE article_id = ? AND word = ? AND COALESCE(context_sentence,'') = COALESCE(?,'') LIMIT 1",
+      args: [articleId, rawWord, sentence],
+    });
+    if (!history.rows.length) {
+      await db.execute({
+        sql: "INSERT INTO word_lookups (article_id, word, lemma, context_sentence, meaning_ja, pos, example_en) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        args: [articleId, rawWord, lemma, sentence, meaningJa, pos, exampleEn],
+      });
+    }
+    return c.json({ ok: true });
+  } catch (err) {
+    handleError("PUT /api/lookup", err);
+    return c.json({ error: "Save failed" }, 500);
+  }
+});
+
 /** Lookup history for one article ("words looked up in this article"). */
 lookup.get("/", async (c) => {
   const articleId = Number(c.req.query("articleId"));

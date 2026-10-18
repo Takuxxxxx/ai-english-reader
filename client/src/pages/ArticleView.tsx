@@ -4,6 +4,7 @@ import { Link, useParams } from "react-router-dom";
 import { useStore } from "../stores/useStore";
 import { api } from "../services/api";
 import { speak, splitSentences } from "../utils/text";
+import { lookupWordInBrowser } from "../utils/word";
 import type { LookupResult, LookupHistoryItem } from "../types-word";
 
 const FONT_SIZES = {
@@ -222,23 +223,70 @@ export default function ArticleView() {
       setOpenResult(null);
       setLoadingKey(key);
       try {
-        const r = await api.lookup(word, sentence, articleId);
+        let r: LookupResult | null = null;
+        try {
+          r = await api.lookup(word, sentence, articleId);
+        } catch {
+          r = null;
+        }
         if (reqRef.current !== myReq) return; // a newer tap superseded this one
-        setOpenResult(r);
-        const h = await api.lookupHistory(articleId);
-        if (reqRef.current !== myReq) return;
-        setHistory(h);
-      } catch {
-        if (reqRef.current !== myReq) return;
-        setOpenResult({
-          word,
-          lemma: null,
-          pos: null,
-          meaningJa: "意味を取得できませんでした",
-          exampleEn: null,
-          cached: false,
-          autoSaved: false,
-        });
+
+        const weak =
+          !r ||
+          r.source === "fallback" ||
+          !r.meaningJa ||
+          r.meaningJa.startsWith("（意味を取得できませんでした") ||
+          r.meaningJa.startsWith("（英語の定義");
+        if (weak) {
+          // Server hit the rate-limited path; resolve in the browser (user's own IP).
+          try {
+            const local = await lookupWordInBrowser(word);
+            if (reqRef.current !== myReq) return;
+            if (local) {
+              setOpenResult({
+                word,
+                lemma: local.lemma ?? r?.lemma ?? null,
+                pos: local.pos ?? r?.pos ?? null,
+                meaningJa: local.meaningJa,
+                exampleEn: local.exampleEn ?? r?.exampleEn ?? null,
+                cached: false,
+                autoSaved: true,
+              });
+              api
+                .saveWordMeaning({
+                  articleId,
+                  word,
+                  meaningJa: local.meaningJa,
+                  pos: local.pos,
+                  lemma: local.lemma,
+                  exampleEn: local.exampleEn,
+                  sentence,
+                })
+                .then(() => api.lookupHistory(articleId).then(setHistory).catch(() => {}))
+                .catch(() => {});
+              return;
+            }
+          } catch {
+            /* fall through to whatever the server gave us */
+          }
+        }
+
+        if (r) {
+          setOpenResult(r);
+          const h = await api.lookupHistory(articleId);
+          if (reqRef.current !== myReq) return;
+          setHistory(h);
+        } else {
+          setOpenResult({
+            word,
+            lemma: null,
+            pos: null,
+            meaningJa: "意味を取得できませんでした。通信状況を確認して、もう一度タップしてください。",
+            exampleEn: null,
+            cached: false,
+            autoSaved: false,
+          });
+        }
       } finally {
         if (reqRef.current === myReq) setLoadingKey(null);
       }

@@ -5,6 +5,7 @@ export interface LookupResult {
   meaningJa: string | null;
   exampleEn: string | null;
   contextSentence?: string | null;
+  source?: "dict" | "llm" | "web" | "fallback";
   cached: boolean;
   autoSaved?: boolean;
 }

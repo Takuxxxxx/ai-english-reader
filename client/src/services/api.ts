@@ -55,6 +55,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ word, sentence, articleId }),
     }).then(handle<import("../types-word").LookupResult>),
+  saveWordMeaning: (v: {
+    articleId: number;
+    word: string;
+    meaningJa: string;
+    pos?: string | null;
+    lemma?: string | null;
+    exampleEn?: string | null;
+    sentence?: string | null;
+  }) =>
+    fetch("/api/lookup", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(v),
+    }).then(handle<{ ok: boolean }>),
   lookupHistory: (articleId: number) =>
     fetch(`/api/lookup?articleId=${articleId}`).then(handle<import("../types-word").LookupHistoryItem[]>),
   vocabList: () => fetch("/api/vocabulary").then(handle<import("../types-word").VocabItem[]>),

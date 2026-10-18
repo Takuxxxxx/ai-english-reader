@@ -129,13 +129,38 @@ async function fetchJson(url: string, ms: number): Promise<unknown> {
   }
 }
 
-/** Free, keyless web fallback (parallel for speed): dictionaryapi.dev (POS/example) + MyMemory word gloss (JA). */
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Free APIs rate-limit shared datacenter IPs, so retry a couple of times with backoff. */
+async function fetchJsonRetry(url: string, ms: number, attempts = 2): Promise<unknown> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetchJson(url, ms);
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await sleep(800 * (i + 1));
+    }
+  }
+  throw lastErr;
+}
+
+const POS_JA = (posEn: string): string => {
+  const p = posEn.toLowerCase();
+  if (p.includes("noun")) return "名詞";
+  if (p.includes("verb")) return "動詞";
+  if (p.includes("adjective")) return "形容詞";
+  if (p.includes("adverb")) return "副詞";
+  return posEn || "その他";
+};
+
+/** Free, keyless web fallback: dictionaryapi.dev (POS/example) + MyMemory / Google gloss (JA). */
 async function explainViaWeb(word: string): Promise<WordExplanation | null> {
   const dictApi = (async () => {
     try {
-      const data = (await fetchJson(
+      const data = (await fetchJsonRetry(
         `https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`,
-        1500
+        5000
       )) as Array<{
         word?: string;
         meanings?: Array<{ partOfSpeech?: string; definitions?: Array<{ definition?: string; example?: string }> }>;
@@ -144,15 +169,9 @@ async function explainViaWeb(word: string): Promise<WordExplanation | null> {
       const meaning = first?.meanings?.[0];
       const def = meaning?.definitions?.[0]?.definition;
       if (!def) return null;
-      const posEn = (meaning?.partOfSpeech ?? "").toLowerCase();
       return {
         lemma: first.word ?? word,
-        pos:
-          posEn.includes("noun") ? "名詞"
-          : posEn.includes("verb") ? "動詞"
-          : posEn.includes("adjective") ? "形容詞"
-          : posEn.includes("adverb") ? "副詞"
-          : posEn || "その他",
+        pos: POS_JA(meaning?.partOfSpeech ?? ""),
         exampleEn: meaning?.definitions?.[0]?.example ?? "",
         enDef: def,
       };
@@ -162,12 +181,12 @@ async function explainViaWeb(word: string): Promise<WordExplanation | null> {
     }
   })();
 
-  const wordGloss = (async () => {
+  const mymemoryGloss = (async () => {
     try {
-      const tr = (await fetchJson(
+      const tr = (await fetchJsonRetry(
         `https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=en|ja`,
-        4000
-      )) as { responseData?: { translatedText?: string }; responseStatus?: number };
+        5000
+      )) as { responseData?: { translatedText?: string } };
       const t = (tr.responseData?.translatedText ?? "").trim();
       if (!t || t.toLowerCase() === word.toLowerCase()) return null;
       return t;
@@ -177,7 +196,22 @@ async function explainViaWeb(word: string): Promise<WordExplanation | null> {
     }
   })();
 
-  const [apiRes, gloss] = await Promise.all([dictApi, wordGloss]);
+  const googleGloss = (async () => {
+    try {
+      const data = (await fetchJsonRetry(
+        `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=ja&dt=t&q=${encodeURIComponent(word)}`,
+        5000
+      )) as Array<Array<Array<string | null>>>;
+      const t = (data?.[0] ?? []).map((s) => s?.[0] ?? "").join("").trim();
+      if (!t || t.toLowerCase() === word.toLowerCase()) return null;
+      return t;
+    } catch {
+      return null;
+    }
+  })();
+
+  const [apiRes, mmGloss, gtGloss] = await Promise.all([dictApi, mymemoryGloss, googleGloss]);
+  const gloss = mmGloss ?? gtGloss;
   if (!apiRes && !gloss) {
     logger.warn("web dictionary lookup failed", { word });
     return null;
@@ -227,7 +261,7 @@ export async function explainWord(rawWord: string, sentence: string): Promise<Wo
     word,
     lemma: word,
     pos: "その他",
-    meaningJa: "（意味を取得できませんでした。ネット接続を確認するか、Ollama等のLLMを設定してください）",
+    meaningJa: "（意味を取得できませんでした。通信状況を確認して、もう一度タップしてください）",
     exampleEn: "",
     source: "fallback",
   };
