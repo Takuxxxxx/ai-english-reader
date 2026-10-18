@@ -126,14 +126,26 @@ export default function ArticleView() {
     setTransError(null);
     let base: Array<string | null> = [];
     try {
-      base = (await api.translation(articleId)).translations;
+      // cache-only: never make the reader wait on Render's rate-limited translation path
+      base = (await api.translation(articleId, true)).translations;
     } catch {
       base = (currentArticle?.body ?? []).map(() => null);
     }
     if (base.every((t) => t)) return base;
+
     const filled = await fillMissingInBrowser(base);
-    if (filled.some((t) => t)) api.saveTranslation(articleId, filled).catch(() => {});
-    if (filled.some((t) => t)) return filled;
+    if (filled.some((t) => t)) {
+      api.saveTranslation(articleId, filled).catch(() => {});
+      return filled;
+    }
+
+    // Browser could not reach the translation API (blocked network); try the server as a last resort.
+    try {
+      const server = (await api.translation(articleId)).translations;
+      if (server.some((t) => t)) return server;
+    } catch {
+      /* ignore */
+    }
     throw new Error("翻訳に失敗しました。もう一度お試しください。");
   }, [articleId, currentArticle?.body, fillMissingInBrowser]);
 
