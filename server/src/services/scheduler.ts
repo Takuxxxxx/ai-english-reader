@@ -11,6 +11,14 @@ async function getSetting(key: string, fallback: string): Promise<string> {
   return row?.value ?? fallback;
 }
 
+async function setSetting(key: string, value: string): Promise<void> {
+  const db = await getDb();
+  await db.execute({
+    sql: "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    args: [key, value],
+  });
+}
+
 function jstNow(): Date {
   return new Date(Date.now() + JST_OFFSET_MS);
 }
@@ -31,17 +39,32 @@ async function generateMissingDailyArticles(): Promise<number> {
   const jstMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0) - JST_OFFSET_MS);
   const cutoffIso = jstMidnight.toISOString().replace("T", " ").slice(0, 19);
 
+  const todayJst = [
+    now.getUTCFullYear(),
+    String(now.getUTCMonth() + 1).padStart(2, "0"),
+    String(now.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+
   let generated = 0;
   for (const t of topics) {
+    // Once a topic has been handled today, never generate for it again (also stops
+    // regeneration churn when an article is deleted or the instance restarts).
+    const flagKey = `autoGenLastDate:${t.id}`;
+    if ((await getSetting(flagKey, "")) === todayJst) continue;
+
     const existing = await db.execute({
       sql: "SELECT COUNT(*) AS n FROM articles WHERE topic_id = ? AND created_at >= ?",
       args: [t.id, cutoffIso],
     });
     const n = Number((existing.rows[0] as unknown as { n: number }).n);
-    if (n > 0) continue;
+    if (n > 0) {
+      await setSetting(flagKey, todayJst);
+      continue;
+    }
     try {
       await generateArticleForTopic(t.name);
       generated++;
+      await setSetting(flagKey, todayJst);
       logger.info(`Auto-generated article for ${t.name}`);
     } catch (err) {
       logger.error(`Auto-generate failed for ${t.name}`, { error: String(err) });

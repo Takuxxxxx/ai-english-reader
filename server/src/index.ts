@@ -16,6 +16,7 @@ import vocabulary from "./routes/vocabulary.js";
 import { providerStatus } from "./services/llm.js";
 import { startScheduler } from "./services/scheduler.js";
 import { backfillArticleWordCache } from "./services/article-word-cache.js";
+import { dedupeArticlesOnce } from "./services/dedupe.js";
 
 const app = new Hono();
 
@@ -58,6 +59,7 @@ const port = Number(process.env.PORT ?? 3001);
 const hostname = process.env.HOST ?? "0.0.0.0";
 logger.info(`Starting server on ${hostname}:${port} (provider=${providerStatus().provider})`);
 await getDb(); // ensure migrations run at boot
+await dedupeArticlesOnce();
 await backfillArticleWordCache();
 
 if (process.env.DISABLE_SCHEDULER !== "1") startScheduler();

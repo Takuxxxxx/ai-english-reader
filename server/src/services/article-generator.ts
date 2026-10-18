@@ -90,9 +90,20 @@ async function saveArticle(
   level: string
 ): Promise<Omit<GeneratedArticle, "wordCount"> & { title: string; body: string[]; topic: string }> {
   const db = await getDb();
+  const bodyJson = JSON.stringify(body);
+  // Never insert an exact (title + body) duplicate; reuse the existing article instead.
+  const dup = await db.execute({
+    sql: "SELECT id FROM articles WHERE title = ? AND body = ? LIMIT 1",
+    args: [title, bodyJson],
+  });
+  const dupRow = dup.rows[0] as unknown as { id: number } | undefined;
+  if (dupRow) {
+    logger.info(`Skipped duplicate article "${title}" (existing id ${Number(dupRow.id)})`);
+    return { title, body, topic };
+  }
   const inserted = await db.execute({
     sql: "INSERT INTO articles (topic_id, title, body, word_count, level, is_new) VALUES (?, ?, ?, ?, ?, 1)",
-    args: [topicId, title, JSON.stringify(body), wordCount, level],
+    args: [topicId, title, bodyJson, wordCount, level],
   });
   const articleId = Number(inserted.lastInsertRowid);
   try {
