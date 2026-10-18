@@ -170,6 +170,37 @@ articles.post("/generate", async (c) => {
   }
 });
 
+// TEMPORARY: remove exact-content duplicate articles (title + body). Deleted after one-off cleanup.
+articles.post("/maintenance/dedupe", async (c) => {
+  if (c.req.header("x-maintenance-token") !== "623340e50d1e19f08024") {
+    return c.json({ error: "forbidden" }, 403);
+  }
+  try {
+    const db = await getDb();
+    const res = await db.execute("SELECT id, title, body FROM articles ORDER BY id ASC");
+    const seen = new Set<string>();
+    const removed: number[] = [];
+    for (const r of res.rows as unknown as Array<{ id: number; title: string; body: string }>) {
+      const key = `${r.title}\u0000${r.body}`;
+      if (seen.has(key)) removed.push(Number(r.id));
+      else seen.add(key);
+    }
+    for (const id of removed) {
+      await db.execute({ sql: "DELETE FROM article_word_cache WHERE article_id = ?", args: [id] });
+      await db.execute({ sql: "DELETE FROM word_lookups WHERE article_id = ?", args: [id] });
+      await db.execute({
+        sql: "UPDATE vocabulary SET source_article_id = NULL WHERE source_article_id = ?",
+        args: [id],
+      });
+      await db.execute({ sql: "DELETE FROM articles WHERE id = ?", args: [id] });
+    }
+    return c.json({ removed: removed.length, remaining: seen.size, removedIds: removed });
+  } catch (err) {
+    handleError("POST /api/articles/maintenance/dedupe", err);
+    return c.json({ error: "dedupe failed" }, 500);
+  }
+});
+
 articles.patch("/:id/read", async (c) => {
   const id = Number(c.req.param("id"));
   const body = await c.req.json().catch(() => ({}));
